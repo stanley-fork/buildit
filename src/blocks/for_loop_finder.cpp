@@ -2,6 +2,103 @@
 
 namespace block {
 
+class declaration_finder : public block_visitor {
+public:
+	using block_visitor::visit;
+	std::vector<decl_stmt::Ptr> declarations;
+
+	void visit(decl_stmt::Ptr stmt) override {
+		declarations.push_back(stmt);
+		block_visitor::visit(stmt);
+	}
+};
+
+static bool is_splittable(decl_stmt::Ptr decl) {
+	type::Ptr type = decl->decl_var->var_type;
+	return !decl->is_typedef && !decl->is_extern && !decl->is_static && !type->is_const &&
+	       !isa<reference_type>(type) && !isa<array_type>(type) && !isa<function_type>(type);
+}
+
+static bool contains_var(const std::vector<decl_stmt::Ptr> &decls, var::Ptr var) {
+	for (auto decl : decls)
+		if (decl->decl_var == var)
+			return true;
+	return false;
+}
+
+static bool find_declarations_to_hoist(stmt::Ptr body, expr::Ptr update, std::vector<decl_stmt::Ptr> &result) {
+	declaration_finder declarations;
+	body->accept(&declarations);
+
+	for (auto decl : declarations.declarations) {
+		var_use_finder uses;
+		uses.to_find = decl->decl_var;
+		update->accept(&uses);
+		if (!uses.found)
+			continue;
+		if (!is_splittable(decl))
+			return false;
+		if (!contains_var(result, decl->decl_var))
+			result.push_back(decl);
+	}
+	return true;
+}
+
+class declaration_splitter : public block_visitor {
+	std::vector<decl_stmt::Ptr> &to_split;
+
+	bool should_split(decl_stmt::Ptr decl) {
+		return contains_var(to_split, decl->decl_var);
+	}
+
+public:
+	using block_visitor::visit;
+
+	declaration_splitter(std::vector<decl_stmt::Ptr> &to_split) : to_split(to_split) {}
+
+	void visit(stmt_block::Ptr block) override {
+		for (unsigned int i = 0; i < block->stmts.size();) {
+			if (!isa<decl_stmt>(block->stmts[i]) || !should_split(to<decl_stmt>(block->stmts[i]))) {
+				block->stmts[i]->accept(this);
+				i++;
+				continue;
+			}
+
+			decl_stmt::Ptr decl = to<decl_stmt>(block->stmts[i]);
+			if (decl->init_expr == nullptr) {
+				block->stmts.erase(block->stmts.begin() + i);
+				continue;
+			}
+
+			auto lhs = std::make_shared<var_expr>();
+			lhs->static_offset = decl->static_offset;
+			lhs->var1 = decl->decl_var;
+
+			auto assign = std::make_shared<assign_expr>();
+			assign->static_offset = decl->static_offset;
+			assign->var1 = lhs;
+			assign->expr1 = decl->init_expr;
+
+			auto replacement = std::make_shared<expr_stmt>();
+			replacement->static_offset = decl->static_offset;
+			replacement->metadata_map = decl->metadata_map;
+			replacement->annotation = decl->annotation;
+			replacement->expr1 = assign;
+
+			block->stmts[i] = replacement;
+			i++;
+		}
+	}
+};
+
+static bool use_update(expr::Ptr candidate, expr::Ptr &update) {
+	if (update == nullptr) {
+		update = candidate;
+		return true;
+	}
+	return update->is_same(candidate);
+}
+
 static bool is_update_expr(var::Ptr decl_var, expr::Ptr last_stmt_expr) {
 
 	if (isa<minus_expr>(last_stmt_expr)) {
@@ -79,9 +176,13 @@ static bool has_further_uses(decl_stmt::Ptr decl, std::vector<stmt::Ptr> stmts, 
 void for_loop_finder::visit(stmt_block::Ptr a) {
 	while (1) {
 		int while_loop_index = -1;
+		expr::Ptr loop_update = nullptr;
 		std::vector<stmt_block::Ptr> parents;
+		std::vector<decl_stmt::Ptr> declarations_to_hoist;
 		for (unsigned int i = 0; i < a->stmts.size(); i++) {
 			parents.clear();
+			declarations_to_hoist.clear();
+			loop_update = nullptr;
 			if (isa<while_stmt>(a->stmts[i])) {
 				while_stmt::Ptr loop = to<while_stmt>(a->stmts[i]);
 				// All checks for while loop -> for loop
@@ -123,16 +224,34 @@ void for_loop_finder::visit(stmt_block::Ptr a) {
 				if (!is_last_update(init_var, loop_body, parents))
 					continue;
 
-				/*
-								if (parents.size() == 0)
-									continue;
-				*/
-				for (auto stmt : loop->continue_blocks) {
-					if (loop->continue_blocks.size() < 2)
-						continue;
-					if (!is_update(init_var, stmt->stmts[stmt->stmts.size() - 2]))
-						continue;
+				bool valid_updates = true;
+				for (auto parent : parents) {
+					expr::Ptr update = to<expr_stmt>(parent->stmts.back())->expr1;
+					if (!use_update(update, loop_update)) {
+						valid_updates = false;
+						break;
+					}
 				}
+
+				for (auto stmt : loop->continue_blocks) {
+					if (stmt->stmts.size() < 2 ||
+					    !is_update(init_var, stmt->stmts[stmt->stmts.size() - 2])) {
+						valid_updates = false;
+						break;
+					}
+					expr::Ptr update = to<expr_stmt>(stmt->stmts[stmt->stmts.size() - 2])->expr1;
+					if (!use_update(update, loop_update)) {
+						valid_updates = false;
+						break;
+					}
+				}
+				if (!valid_updates)
+					continue;
+
+				if (loop_update != nullptr &&
+				    !find_declarations_to_hoist(loop->body, loop_update, declarations_to_hoist))
+					continue;
+
 				while_loop_index = i - 1;
 				break;
 			}
@@ -142,6 +261,12 @@ void for_loop_finder::visit(stmt_block::Ptr a) {
 			std::vector<stmt::Ptr> new_stmts;
 			for (int i = 0; i < while_loop_index; i++)
 				new_stmts.push_back(a->stmts[i]);
+			for (auto decl : declarations_to_hoist) {
+				decl_stmt::Ptr hoisted = clone(decl);
+				hoisted->init_expr = nullptr;
+				hoisted->annotation.clear();
+				new_stmts.push_back(hoisted);
+			}
 			for_stmt::Ptr for_loop = std::make_shared<for_stmt>();
 			for_loop->static_offset = a->stmts[while_loop_index]->static_offset;
 			// Before we merge the decl with the for loop, make sure
@@ -161,21 +286,13 @@ void for_loop_finder::visit(stmt_block::Ptr a) {
 			for_loop->annotation = for_loop->decl_stmt->annotation;
 			for_loop->decl_stmt->annotation.clear();
 			for_loop->cond = loop->cond;
-			if (parents.size() == 0) {
-				for_loop->update = nullptr;
-			} else {
-				for_loop->update = to<expr_stmt>(parents[0]->stmts.back())->expr1;
-			}
+			for_loop->update = loop_update;
 			for (unsigned int i = 0; i < parents.size(); i++)
 				parents[i]->stmts.pop_back();
 			for (auto stmt : loop->continue_blocks) {
 				auto cont_stmt = stmt->stmts.back();
 				// This is the continue
 				stmt->stmts.pop_back();
-				// It is possible that none of the parents had an update
-				// This could happen becuase of breaks
-				if (for_loop->update == nullptr)
-					for_loop->update = to<expr_stmt>(stmt->stmts.back())->expr1;
 				stmt->stmts.pop_back();
 				stmt->stmts.push_back(cont_stmt);
 			}
@@ -185,6 +302,9 @@ void for_loop_finder::visit(stmt_block::Ptr a) {
 				ce->value = 0;
 				for_loop->update = ce;
 			}
+
+			declaration_splitter splitter(declarations_to_hoist);
+			loop->body->accept(&splitter);
 
 			for_loop->body = loop->body;
 			new_stmts.push_back(for_loop);

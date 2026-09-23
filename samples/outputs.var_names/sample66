@@ -1,0 +1,36 @@
+int generated_simple (int arg0) {
+  int one_1;
+  int i_0 = 0;
+  for (0; i_0 < arg0; i_0 = i_0 + one_1) {
+    one_1 = 1;
+  }
+  return i_0;
+}
+
+int generated_nested (int arg0, int arg1) {
+  int i_0 = 0;
+  int total_1 = 0;
+  while (i_0 < arg0) {
+    int one_3;
+    for (int j_2 = 0; j_2 < arg1; j_2 = j_2 + one_3) {
+      one_3 = 1;
+      total_1 = total_1 + one_3;
+    }
+    i_0 = i_0 + 1;
+  }
+  return total_1;
+}
+
+int generated_early_return (int arg0, int arg1) {
+  int one_2;
+  for (int i_0 = 0; i_0 < arg0; i_0 = i_0 + one_2) {
+    if (i_0 == arg1) {
+      int var1 = i_0;
+      return var1;
+    } 
+    one_2 = 1;
+  }
+  int var3 = -1;
+  return var3;
+}
+
