@@ -3,6 +3,7 @@
 #include "blocks/if_switcher.h"
 #include "blocks/label_inserter.h"
 #include "blocks/loop_finder.h"
+#include "blocks/loop_normalizer.h"
 #include "blocks/loop_roll.h"
 #include "blocks/rce.h"
 #include "blocks/sub_expr_cleanup.h"
@@ -226,6 +227,7 @@ void builder_context::extract_function_ast_impl(invocation_state* i_state) {
 	ast->accept(&cleaner);
 
 	if (!feature_unstructured) {
+		block::normalize_loop_backedges(ast);
 
 		block::basic_block::cfg_block BBs = generate_basic_blocks(block::to<block::stmt_block>(ast));
 		

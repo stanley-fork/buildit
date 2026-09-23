@@ -224,6 +224,12 @@ void loop_finder::visit_label(label_stmt::Ptr a, stmt_block::Ptr parent) {
 	}
 
 	if (last_stmt == nullptr) {
+		last_jump_finder global_jump_finder;
+		global_jump_finder.jump_label = a->label1;
+		ast->accept(&global_jump_finder);
+		if (global_jump_finder.has_jump_to)
+			return;
+
 		// This label was created but has no jump.
 		// this currently happens when two statements have the same tag
 		// For now we will just delete this label
