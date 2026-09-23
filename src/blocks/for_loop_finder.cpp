@@ -1,23 +1,7 @@
 #include "blocks/for_loop_finder.h"
+#include "blocks/declaration_utils.h"
 
 namespace block {
-
-class declaration_finder : public block_visitor {
-public:
-	using block_visitor::visit;
-	std::vector<decl_stmt::Ptr> declarations;
-
-	void visit(decl_stmt::Ptr stmt) override {
-		declarations.push_back(stmt);
-		block_visitor::visit(stmt);
-	}
-};
-
-static bool is_splittable(decl_stmt::Ptr decl) {
-	type::Ptr type = decl->decl_var->var_type;
-	return !decl->is_typedef && !decl->is_extern && !decl->is_static && !type->is_const &&
-	       !isa<reference_type>(type) && !isa<array_type>(type) && !isa<function_type>(type);
-}
 
 static bool contains_var(const std::vector<decl_stmt::Ptr> &decls, var::Ptr var) {
 	for (auto decl : decls)
@@ -27,10 +11,7 @@ static bool contains_var(const std::vector<decl_stmt::Ptr> &decls, var::Ptr var)
 }
 
 static bool find_declarations_to_hoist(stmt::Ptr body, expr::Ptr update, std::vector<decl_stmt::Ptr> &result) {
-	declaration_finder declarations;
-	body->accept(&declarations);
-
-	for (auto decl : declarations.declarations) {
+	for (auto decl : find_declarations(body)) {
 		var_use_finder uses;
 		uses.to_find = decl->decl_var;
 		update->accept(&uses);
@@ -43,53 +24,6 @@ static bool find_declarations_to_hoist(stmt::Ptr body, expr::Ptr update, std::ve
 	}
 	return true;
 }
-
-class declaration_splitter : public block_visitor {
-	std::vector<decl_stmt::Ptr> &to_split;
-
-	bool should_split(decl_stmt::Ptr decl) {
-		return contains_var(to_split, decl->decl_var);
-	}
-
-public:
-	using block_visitor::visit;
-
-	declaration_splitter(std::vector<decl_stmt::Ptr> &to_split) : to_split(to_split) {}
-
-	void visit(stmt_block::Ptr block) override {
-		for (unsigned int i = 0; i < block->stmts.size();) {
-			if (!isa<decl_stmt>(block->stmts[i]) || !should_split(to<decl_stmt>(block->stmts[i]))) {
-				block->stmts[i]->accept(this);
-				i++;
-				continue;
-			}
-
-			decl_stmt::Ptr decl = to<decl_stmt>(block->stmts[i]);
-			if (decl->init_expr == nullptr) {
-				block->stmts.erase(block->stmts.begin() + i);
-				continue;
-			}
-
-			auto lhs = std::make_shared<var_expr>();
-			lhs->static_offset = decl->static_offset;
-			lhs->var1 = decl->decl_var;
-
-			auto assign = std::make_shared<assign_expr>();
-			assign->static_offset = decl->static_offset;
-			assign->var1 = lhs;
-			assign->expr1 = decl->init_expr;
-
-			auto replacement = std::make_shared<expr_stmt>();
-			replacement->static_offset = decl->static_offset;
-			replacement->metadata_map = decl->metadata_map;
-			replacement->annotation = decl->annotation;
-			replacement->expr1 = assign;
-
-			block->stmts[i] = replacement;
-			i++;
-		}
-	}
-};
 
 static bool use_update(expr::Ptr candidate, expr::Ptr &update) {
 	if (update == nullptr) {
@@ -303,8 +237,7 @@ void for_loop_finder::visit(stmt_block::Ptr a) {
 				for_loop->update = ce;
 			}
 
-			declaration_splitter splitter(declarations_to_hoist);
-			loop->body->accept(&splitter);
+			split_declarations(loop->body, declarations_to_hoist);
 
 			for_loop->body = loop->body;
 			new_stmts.push_back(for_loop);

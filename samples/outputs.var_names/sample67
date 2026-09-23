@@ -1,0 +1,49 @@
+int generated_same_body (int arg0) {
+  int i_0 = 0;
+  int z_1 = 0;
+  if (i_0 < arg0) {
+    z_1 = z_1 + 1;
+    i_0 = i_0 + 1;
+  } 
+  while (i_0 < arg0) {
+    z_1 = z_1 + 1;
+    i_0 = i_0 + 1;
+  }
+  return z_1;
+}
+
+int generated_different_prefix (int arg0) {
+  int i_0 = 0;
+  int a_1 = 0;
+  int b_2 = 0;
+  if (i_0 < arg0) {
+    b_2 = b_2 + 1;
+    i_0 = i_0 + 1;
+  } 
+  while (i_0 < arg0) {
+    a_1 = a_1 + 1;
+    i_0 = i_0 + 1;
+  }
+  int var3 = a_1 + b_2;
+  return var3;
+}
+
+int generated_followed_by_loop (int arg0) {
+  int i_0 = 0;
+  int j_1 = 0;
+  int z_2 = 0;
+  if (i_0 < arg0) {
+    z_2 = z_2 + 1;
+    i_0 = i_0 + 1;
+  } 
+  while (i_0 < arg0) {
+    z_2 = z_2 + 1;
+    i_0 = i_0 + 1;
+  }
+  while (j_1 < arg0) {
+    z_2 = z_2 + 1;
+    j_1 = j_1 + 1;
+  }
+  return z_2;
+}
+
